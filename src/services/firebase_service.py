@@ -1,8 +1,13 @@
 """
 Firebase Service for updating sensor data to Realtime Database
 """
-import firebase_admin
-from firebase_admin import credentials, db
+try:
+    import firebase_admin
+    from firebase_admin import credentials, db
+    FIREBASE_AVAILABLE = True
+except ImportError:
+    FIREBASE_AVAILABLE = False
+
 import datetime
 import json
 from typing import Dict, Any, Optional
@@ -12,14 +17,27 @@ from ..config.settings import FIREBASE_ADMIN_SDK_PATH, FIREBASE_DATABASE_URL, FI
 
 logger = logging.getLogger(__name__)
 
+if not FIREBASE_AVAILABLE:
+    logger.warning("firebase_admin module not found. Firebase functionality will be disabled.")
+
 class FirebaseService:
     def __init__(self):
+        if not FIREBASE_AVAILABLE:
+            logger.warning("FirebaseService initialized without firebase_admin module. Firebase functionality will be disabled.")
+            self.app = None
+            self.database = None
+            return
+
         self.app = None
         self.database = None
         self._initialize_firebase()
 
     def _initialize_firebase(self):
         """Initialize Firebase Admin SDK"""
+        if not FIREBASE_AVAILABLE:
+            logger.warning("Cannot initialize Firebase: firebase_admin module not available")
+            return
+
         try:
             # Check if Firebase app is already initialized
             if not firebase_admin._apps:
@@ -58,6 +76,10 @@ class FirebaseService:
         Returns:
             bool: True if successful, False otherwise
         """
+        if not FIREBASE_AVAILABLE:
+            logger.warning("Cannot sync sensor data: firebase_admin module not available")
+            return False
+
         try:
             # Get a database reference
             ref = db.reference('/')
@@ -90,6 +112,10 @@ class FirebaseService:
         Returns:
             bool: True if successful, False otherwise
         """
+        if not FIREBASE_AVAILABLE:
+            logger.warning("Cannot update sensor: firebase_admin module not available")
+            return False
+
         try:
             # Get a database reference for the specific sensor
             ref = db.reference(f'/sensors/{sensor_name}')
@@ -127,6 +153,10 @@ class FirebaseService:
         Returns:
             Dictionary containing sensor data
         """
+        if not FIREBASE_AVAILABLE:
+            logger.warning("Cannot get sensor data: firebase_admin module not available")
+            return {'error': 'firebase_admin module not available'}
+
         try:
             if sensor_name:
                 ref = db.reference(f'/sensors/{sensor_name}')
@@ -153,6 +183,14 @@ class FirebaseService:
         Returns:
             Dictionary containing health status
         """
+        if not FIREBASE_AVAILABLE:
+            return {
+                'status': 'unhealthy',
+                'firebase_connected': False,
+                'error': 'firebase_admin module not available',
+                'timestamp': datetime.datetime.now().isoformat()
+            }
+
         try:
             # Try to read from Firebase
             ref = db.reference('/health_check')
