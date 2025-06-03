@@ -1,7 +1,14 @@
 """
 Flask API service for handling sensor data requests and camera operations
 """
-import json5  # Add json5 for JSONC support
+try:
+    import json5  # Add json5 for JSONC support
+    JSON5_AVAILABLE = True
+except ImportError:
+    JSON5_AVAILABLE = False
+    import json  # Fallback to standard json
+
+import logging
 from flask import Flask, jsonify, Response, render_template, request
 from flask_cors import CORS
 from pathlib import Path
@@ -10,6 +17,11 @@ from .video_stream_service import VideoStreamService
 from .control_service import ControlService
 from .firebase_service import FirebaseService
 from .sensor_data_service import SensorDataService
+
+logger = logging.getLogger(__name__)
+
+if not JSON5_AVAILABLE:
+    logger.warning("json5 module not found. Using standard json instead.")
 
 class APIService:
     def __init__(self, host='0.0.0.0', port=5000, serial_service=None):
@@ -343,3 +355,43 @@ class APIService:
             # Release video service resources
             if hasattr(self, 'video_service'):
                 self.video_service.release() 
+
+    def parse_json_file(self, file_path: str) -> Dict[str, Any]:
+        """
+        Parse JSON file with support for comments (JSONC)
+        
+        Args:
+            file_path: Path to JSON file
+            
+        Returns:
+            Dictionary containing parsed JSON data
+        """
+        try:
+            file_path = Path(file_path)
+            if not file_path.exists():
+                logger.error(f"File not found: {file_path}")
+                return {}
+                
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                
+            if JSON5_AVAILABLE:
+                return json5.loads(content)
+            else:
+                # Remove comments manually if using standard json
+                lines = content.split('\n')
+                cleaned_lines = []
+                for line in lines:
+                    # Skip comment lines
+                    if line.strip().startswith('//'):
+                        continue
+                    # Remove inline comments
+                    if '//' in line:
+                        line = line.split('//')[0]
+                    cleaned_lines.append(line)
+                cleaned_content = '\n'.join(cleaned_lines)
+                return json.loads(cleaned_content)
+                
+        except Exception as e:
+            logger.error(f"Error parsing JSON file: {str(e)}")
+            return {} 
