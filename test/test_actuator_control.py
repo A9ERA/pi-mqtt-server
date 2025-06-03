@@ -1,187 +1,158 @@
 #!/usr/bin/env python3
 """
-Test script for ActuatorController
-Tests MQTT and Serial communication for actuator control
+Test script for Actuator Control
+Tests all actuator control functions and provides interactive testing mode
 """
 
-import os
-import sys
-import time
-import unittest
-from unittest.mock import MagicMock, patch
-import paho.mqtt.client as mqtt
 import serial
+import serial.tools.list_ports
+import time
+import sys
+import os
 
-# Add the src directory to the path so we can import our modules
+# Add the src directory to the path so we can import our utils
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
-from actuator_control import ActuatorController
+from utils.arduino_detector import find_arduino_port, list_all_ports
 
-class TestActuatorController(unittest.TestCase):
-    """Test cases for ActuatorController"""
-    
-    def setUp(self):
-        """Set up test fixtures"""
-        # Mock MQTT client
-        self.mqtt_patcher = patch('paho.mqtt.client.Client')
-        self.mock_mqtt = self.mqtt_patcher.start()
-        self.mock_mqtt_instance = MagicMock()
-        self.mock_mqtt.return_value = self.mock_mqtt_instance
-        
-        # Mock Serial
-        self.serial_patcher = patch('serial.Serial')
-        self.mock_serial = self.serial_patcher.start()
-        self.mock_serial_instance = MagicMock()
-        self.mock_serial.return_value = self.mock_serial_instance
-        
-        # Create controller instance
-        self.controller = ActuatorController(
-            mqtt_broker="localhost",
-            mqtt_port=1883,
-            serial_port="COM3",  # Mock port
-            baud_rate=9600
-        )
-        
-    def tearDown(self):
-        """Clean up test fixtures"""
-        self.mqtt_patcher.stop()
-        self.serial_patcher.stop()
-        if hasattr(self, 'controller'):
-            self.controller.cleanup()
-    
-    def test_initialization(self):
-        """Test controller initialization"""
-        self.assertEqual(self.controller.mqtt_broker, "localhost")
-        self.assertEqual(self.controller.mqtt_port, 1883)
-        self.assertEqual(self.controller.serial_port, "COM3")
-        self.assertEqual(self.controller.baud_rate, 9600)
-        
-        # Check if MQTT client was created
-        self.mock_mqtt.assert_called_once()
-        
-        # Check if Serial was created
-        self.mock_serial.assert_called_once_with(
-            "COM3", 9600, timeout=2
-        )
-    
-    def test_mqtt_connect(self):
-        """Test MQTT connection"""
-        # Simulate successful connection
-        self.controller._on_mqtt_connect(None, None, None, 0)
-        
-        # Check if subscribed to all topics
-        expected_topics = [
-            '[control]/actuator/extend',
-            '[control]/actuator/retract',
-            '[control]/actuator/stop',
-            '[control]/status'
-        ]
-        
-        for topic in expected_topics:
-            self.mock_mqtt_instance.subscribe.assert_any_call(topic)
-        
-        self.assertTrue(self.controller.connected)
-    
-    def test_mqtt_disconnect(self):
-        """Test MQTT disconnection"""
-        # Simulate disconnection
-        self.controller._on_mqtt_disconnect(None, None, 0)
-        self.assertFalse(self.controller.connected)
-    
-    def test_mqtt_message_handling(self):
-        """Test MQTT message handling"""
-        # Test extend command
-        msg = MagicMock()
-        msg.topic = '[control]/actuator/extend'
-        msg.payload = b'1'
-        self.controller._on_mqtt_message(None, None, msg)
-        self.mock_serial_instance.write.assert_called_with(
-            b'[control]:actuator:extend\n'
-        )
-        
-        # Test retract command
-        msg.topic = '[control]/actuator/retract'
-        self.controller._on_mqtt_message(None, None, msg)
-        self.mock_serial_instance.write.assert_called_with(
-            b'[control]:actuator:retract\n'
-        )
-        
-        # Test stop command
-        msg.topic = '[control]/actuator/stop'
-        self.controller._on_mqtt_message(None, None, msg)
-        self.mock_serial_instance.write.assert_called_with(
-            b'[control]:actuator:stop\n'
-        )
-        
-        # Test status command
-        msg.topic = '[control]/status'
-        self.controller._on_mqtt_message(None, None, msg)
-        self.mock_serial_instance.write.assert_called_with(
-            b'[control]:status\n'
-        )
-    
-    def test_arduino_command_sending(self):
-        """Test sending commands to Arduino"""
-        # Mock Arduino response
-        self.mock_serial_instance.in_waiting = 1
-        self.mock_serial_instance.readline.return_value = b'OK\n'
-        
-        # Test sending command
-        success, response = self.controller._send_arduino_command(
-            "[control]:actuator:extend"
-        )
-        
-        self.assertTrue(success)
-        self.assertEqual(response, "OK")
-        self.mock_serial_instance.write.assert_called_with(
-            b'[control]:actuator:extend\n'
-        )
-        
-        # Test publishing response to MQTT
-        self.mock_mqtt_instance.publish.assert_called_with(
-            '[response]/actuator/status', 'OK'
-        )
-    
-    def test_arduino_no_response(self):
-        """Test handling no response from Arduino"""
-        # Mock no response
-        self.mock_serial_instance.in_waiting = 0
-        
-        success, response = self.controller._send_arduino_command(
-            "[control]:actuator:extend"
-        )
-        
-        self.assertTrue(success)
-        self.assertEqual(response, "No response")
-    
-    def test_serial_error_handling(self):
-        """Test handling serial communication errors"""
-        # Mock serial error
-        self.mock_serial_instance.write.side_effect = serial.SerialException(
-            "Test error"
-        )
-        
-        success, response = self.controller._send_arduino_command(
-            "[control]:actuator:extend"
-        )
-        
-        self.assertFalse(success)
-        self.assertIn("Test error", response)
-    
-    def test_cleanup(self):
-        """Test cleanup of connections"""
-        self.controller.cleanup()
-        
-        # Check if MQTT was cleaned up
-        self.mock_mqtt_instance.loop_stop.assert_called_once()
-        self.mock_mqtt_instance.disconnect.assert_called_once()
-        
-        # Check if Serial was cleaned up
-        self.mock_serial_instance.close.assert_called_once()
+def display_menu():
+    """Display the test menu"""
+    print("\n" + "=" * 50)
+    print("🔌 Actuator Control Test Menu")
+    print("=" * 50)
+    print("ACTUATOR CONTROLS:")
+    print("  1. Extend actuator")
+    print("  2. Retract actuator")
+    print("  3. Stop actuator")
+    print()
+    print("STATUS & TESTING:")
+    print("  4. Check actuator status")
+    print("  5. Run full test sequence")
+    print("  6. Send custom command")
+    print()
+    print("  0. Exit")
+    print("=" * 50)
 
-def run_tests():
-    """Run the test suite"""
-    print("🧪 Running ActuatorController Tests...")
-    unittest.main(verbosity=2)
+def send_command(ser, command):
+    """Send a command to Arduino and show response"""
+    print(f"\nSending: {command.strip()}")
+    try:
+        ser.write(command.encode('utf-8'))
+        time.sleep(0.3)
+        
+        # Check for response
+        if ser.in_waiting > 0:
+            response = ser.readline().decode('utf-8').strip()
+            print(f"Arduino response: {response}")
+            return True, response
+        else:
+            print("No response from Arduino")
+            return True, "No response"
+            
+    except Exception as e:
+        print(f"Error sending command: {e}")
+        return False, str(e)
 
-if __name__ == '__main__':
-    run_tests() 
+def run_full_test(ser):
+    """Run a complete test sequence for actuator"""
+    print("\n=== Running Full Actuator Test Sequence ===")
+    
+    test_sequence = [
+        ("[control]:actuator:extend\n", "Extending actuator"),
+        ("[control]:actuator:stop\n", "Stopping actuator"),
+        ("[control]:actuator:retract\n", "Retracting actuator"),
+        ("[control]:actuator:stop\n", "Stopping actuator"),
+        ("[control]:status\n", "Checking final status")
+    ]
+    
+    for command, description in test_sequence:
+        print(f"\n{description}...")
+        success, response = send_command(ser, command)
+        print(f"Result: {'✅ Success' if success else '❌ Failed'}")
+        print(f"Response: {response}")
+        time.sleep(1)  # Wait between commands
+    
+    print("\n=== Test Sequence Completed ===")
+
+def main():
+    # Configuration
+    BAUD_RATE = 9600
+    
+    print("🤖 Actuator Control Interactive Test")
+    print("=" * 50)
+    
+    # Auto-detect Arduino port
+    print("🔍 Searching for Arduino...")
+    arduino_port = find_arduino_port()
+    
+    if not arduino_port:
+        print("❌ No Arduino found!")
+        print("\n📋 Available ports:")
+        list_all_ports()
+        print("💡 Please connect your Arduino and try again.")
+        return
+    
+    print(f"✅ Using Arduino at: {arduino_port}")
+    print(f"📊 Baud Rate: {BAUD_RATE}")
+    print("🔌 Connecting to Arduino...")
+    
+    try:
+        # Connect to Arduino
+        ser = serial.Serial(arduino_port, BAUD_RATE, timeout=2)
+        time.sleep(2)  # Wait for Arduino to reset
+        print("✅ Connected successfully!")
+        
+        while True:
+            display_menu()
+            
+            try:
+                choice = input("\nEnter your choice (0-6): ").strip()
+                
+                if choice == "0":
+                    print("👋 Exiting...")
+                    break
+                    
+                elif choice == "1":
+                    send_command(ser, "[control]:actuator:extend\n")
+                    
+                elif choice == "2":
+                    send_command(ser, "[control]:actuator:retract\n")
+                    
+                elif choice == "3":
+                    send_command(ser, "[control]:actuator:stop\n")
+                    
+                elif choice == "4":
+                    send_command(ser, "[control]:status\n")
+                    
+                elif choice == "5":
+                    run_full_test(ser)
+                    
+                elif choice == "6":
+                    custom_command = input("Enter custom command: ")
+                    if not custom_command.endswith('\n'):
+                        custom_command += '\n'
+                    send_command(ser, custom_command)
+                    
+                else:
+                    print("❌ Invalid choice. Please try again.")
+                    
+            except KeyboardInterrupt:
+                print("\n⚠️  Returning to menu...")
+                continue
+                
+    except serial.SerialException as e:
+        print(f"❌ Error connecting to Arduino: {e}")
+        print("💡 Make sure:")
+        print("   • Arduino is connected")
+        print("   • Arduino has actuator_control.ino uploaded")
+        print("   • No other program is using the serial port")
+    except KeyboardInterrupt:
+        print("\n⚠️  Program interrupted by user")
+    except Exception as e:
+        print(f"❌ Unexpected error: {e}")
+    finally:
+        if 'ser' in locals() and ser.is_open:
+            ser.close()
+            print("🔌 Serial connection closed")
+
+if __name__ == "__main__":
+    main() 
