@@ -110,3 +110,35 @@ To monitor a serial port
 ```bash
 screen /dev/ttyUSB0 9600
 ```
+
+# Pi-MQTT-Server & Fish-Feeder-Arduino
+
+## โครงสร้างโปรเจกต์
+
+- `fish-feeder-arduino/` : โค้ดฝั่ง Arduino (PlatformIO)
+  - `src/services/blower_sensor.h/cpp` : ควบคุม Blower Motor (Pin 50, 5, 6)
+  - `src/services/relay_sensor.h/cpp` : ควบคุม Relay (Pin 50, 52)
+  - `src/services/actuator_sensor.h/cpp` : ควบคุม Actuator & Feeder Motor (Pin 8,9,10,11,12,13)
+- `test/` : สคริปต์ Python สำหรับทดสอบแต่ละอุปกรณ์บน Pi
+  - `test_blower_control.py` : ทดสอบ Blower
+  - `test_actuator_control.py` : ทดสอบ Actuator
+
+## Pin Mapping หลัก (ตามเอกสาร)
+- Blower: 50 (Relay), 5 (PWM_R), 6 (PWM_L)
+- Relay: 50, 52
+- Actuator: 11 (ENA), 12 (IN1), 13 (IN2)
+- Feeder: 8 (ENA), 9 (IN1), 10 (IN2)
+
+## วิธีใช้งาน
+1. อัพโหลดโค้ด Arduino ด้วย PlatformIO
+2. รันสคริปต์ Python ที่ Pi (เช่น `python3 test/test_blower_control.py`)
+3. เลือกเมนูเพื่อสั่งงานอุปกรณ์
+
+## Serial Command Format
+- `[control]:blower:on` / `off` / `status`
+- `[control]:relay:on` / `off` / `status`
+- `[control]:actuator:extend` / `retract` / `stop` / `status`
+
+## หมายเหตุ
+- ตรวจสอบ serial port ให้ตรงกับที่เชื่อมต่อ Arduino
+- หากมี error หรืออุปกรณ์ไม่ตอบสนอง ให้ตรวจสอบ pin mapping และอัปโหลดโค้ดล่าสุด
