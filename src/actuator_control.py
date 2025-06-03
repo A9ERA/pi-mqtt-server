@@ -2,6 +2,7 @@
 """
 Actuator Control Module
 Handles MQTT communication for actuator control and serial communication with Arduino
+Provides both interactive and MQTT control modes
 """
 
 import os
@@ -19,7 +20,8 @@ from utils.arduino_detector import find_arduino_port, list_all_ports
 
 class ActuatorController:
     def __init__(self, mqtt_broker: str = "localhost", mqtt_port: int = 1883,
-                 serial_port: Optional[str] = None, baud_rate: int = 9600):
+                 serial_port: Optional[str] = None, baud_rate: int = 9600,
+                 interactive_mode: bool = False):
         """Initialize the actuator controller with MQTT and Serial connections"""
         self.mqtt_broker = mqtt_broker
         self.mqtt_port = mqtt_port
@@ -28,6 +30,7 @@ class ActuatorController:
         self.ser: Optional[serial.Serial] = None
         self.mqtt_client: Optional[mqtt.Client] = None
         self.connected = False
+        self.interactive_mode = interactive_mode
         
         # MQTT Topics
         self.topics = {
@@ -39,8 +42,9 @@ class ActuatorController:
         }
         
         # Initialize connections
-        self._setup_mqtt()
         self._setup_serial()
+        if not interactive_mode:
+            self._setup_mqtt()
 
     def _setup_mqtt(self):
         """Setup MQTT client and connect to broker"""
@@ -138,8 +142,8 @@ class ActuatorController:
                 response = self.ser.readline().decode('utf-8').strip()
                 print(f"📥 Arduino response: {response}")
                 
-                # Publish response to MQTT
-                if self.mqtt_client and self.connected:
+                # Publish response to MQTT if not in interactive mode
+                if not self.interactive_mode and self.mqtt_client and self.connected:
                     self.mqtt_client.publish(self.topics['response'], response)
                 
                 return True, response
@@ -152,15 +156,105 @@ class ActuatorController:
             print(f"❌ {error_msg}")
             return False, error_msg
 
+    def display_menu(self):
+        """Display the interactive menu"""
+        print("\n" + "=" * 50)
+        print("Actuator Control - Interactive Mode")
+        print("=" * 50)
+        print("ACTUATOR CONTROLS:")
+        print("  1. Extend actuator")
+        print("  2. Retract actuator")
+        print("  3. Stop actuator")
+        print()
+        print("STATUS & TESTING:")
+        print("  4. Check actuator status")
+        print("  5. Run full test sequence")
+        print("  6. Send custom command")
+        print()
+        print("  0. Exit")
+        print("=" * 50)
+
+    def run_full_test(self):
+        """Run a complete test sequence"""
+        print("\n=== Running Full Actuator Test Sequence ===")
+        
+        test_sequence = [
+            ("[control]:actuator:extend", "Extending actuator"),
+            ("[control]:actuator:stop", "Stopping actuator"),
+            ("[control]:actuator:retract", "Retracting actuator"),
+            ("[control]:actuator:stop", "Stopping actuator"),
+            ("[control]:status", "Checking final status")
+        ]
+        
+        for command, description in test_sequence:
+            print(f"\n{description}...")
+            success, response = self._send_arduino_command(command)
+            print(f"Result: {'✅ Success' if success else '❌ Failed'}")
+            print(f"Response: {response}")
+            time.sleep(1)  # Wait between commands
+        
+        print("\n=== Test Sequence Completed ===")
+
+    def start_interactive(self):
+        """Start interactive control mode"""
+        try:
+            print("🚀 Starting Actuator Controller in Interactive Mode...")
+            
+            while True:
+                self.display_menu()
+                
+                try:
+                    choice = input("\nEnter your choice (0-6): ").strip()
+                    
+                    if choice == "0":
+                        print("👋 Exiting...")
+                        break
+                        
+                    elif choice == "1":
+                        self._send_arduino_command("[control]:actuator:extend")
+                        
+                    elif choice == "2":
+                        self._send_arduino_command("[control]:actuator:retract")
+                        
+                    elif choice == "3":
+                        self._send_arduino_command("[control]:actuator:stop")
+                        
+                    elif choice == "4":
+                        self._send_arduino_command("[control]:status")
+                        
+                    elif choice == "5":
+                        self.run_full_test()
+                        
+                    elif choice == "6":
+                        custom_command = input("Enter custom command: ")
+                        if not custom_command.endswith('\n'):
+                            custom_command += '\n'
+                        self._send_arduino_command(custom_command.strip())
+                        
+                    else:
+                        print("❌ Invalid choice. Please try again.")
+                        
+                except KeyboardInterrupt:
+                    print("\n⚠️  Returning to menu...")
+                    continue
+                    
+        except KeyboardInterrupt:
+            print("\n⚠️  Shutting down...")
+        finally:
+            self.cleanup()
+
     def start(self):
         """Start the actuator controller"""
         try:
-            print("🚀 Starting Actuator Controller...")
-            while True:
-                time.sleep(1)  # Keep the main thread alive
-                
+            if self.interactive_mode:
+                self.start_interactive()
+            else:
+                print("🚀 Starting Actuator Controller in MQTT Mode...")
+                while True:
+                    time.sleep(1)  # Keep the main thread alive
+                    
         except KeyboardInterrupt:
-            print("\n⚠️ Shutting down...")
+            print("\n⚠️  Shutting down...")
         finally:
             self.cleanup()
 
@@ -180,8 +274,11 @@ class ActuatorController:
 def main():
     """Main entry point"""
     try:
+        # Check if interactive mode is requested
+        interactive_mode = "--interactive" in sys.argv
+        
         # Create and start the controller
-        controller = ActuatorController()
+        controller = ActuatorController(interactive_mode=interactive_mode)
         controller.start()
         
     except Exception as e:
