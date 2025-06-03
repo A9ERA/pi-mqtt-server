@@ -13,7 +13,7 @@ import json
 from typing import Dict, Any, Optional
 from pathlib import Path
 import logging
-from ..config.settings import FIREBASE_ADMIN_SDK_PATH, FIREBASE_DATABASE_URL, FIREBASE_PROJECT_ID
+from config.settings import FIREBASE_ADMIN_SDK_PATH, FIREBASE_DATABASE_URL, FIREBASE_PROJECT_ID
 
 logger = logging.getLogger(__name__)
 
