@@ -5,5 +5,5 @@ Service modules initialization
 # Only import relay service
 from .relay_service import RelayService
 
-# Firebase service must be imported explicitly if needed
+# Comment out firebase service to avoid import errors
 # from .firebase_service import FirebaseService 
