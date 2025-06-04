@@ -1,5 +1,5 @@
 """
-Flask API service for handling sensor data requests and camera operations
+Enhanced Flask API service for handling sensor data requests, camera operations, and Arduino control
 """
 try:
     import json5  # Add json5 for JSONC support
@@ -29,7 +29,7 @@ except ImportError:
 
 class APIService:
     def __init__(self, host='0.0.0.0', port=5000, serial_service=None):
-        """Initialize API Service"""
+        """Initialize Enhanced API Service"""
         if not FLASK_AVAILABLE:
             logger.warning("API Service initialized without Flask. API server functionality will be disabled.")
             return
@@ -43,6 +43,7 @@ class APIService:
         self.port = port
         self.sensors_file = Path(__file__).parent.parent / 'data' / 'sensors_data.jsonc'
         self.start_time = time.time()
+        self.serial_service = serial_service  # Store serial service reference
         
         # Initialize services only if Flask is available
         if FLASK_AVAILABLE:
@@ -72,6 +73,10 @@ class APIService:
         self.app.route('/')(self.index)
         self.app.route('/health')(self.health_check)
 
+        # Arduino status routes
+        self.app.route('/api/arduino/status')(self.get_arduino_status)
+        self.app.route('/api/arduino/health')(self.check_arduino_health)
+
         # Sensor data routes
         self.app.route('/api/sensors/<sensor_name>')(self.get_sensor_data)
         self.app.route('/api/sensors')(self.get_all_sensors)
@@ -84,9 +89,19 @@ class APIService:
         self.app.route('/api/camera/record/stop', methods=['POST'])(self.stop_recording)
         self.app.route('/api/camera/audio/record', methods=['POST'])(self.record_audio)
         
-        # Device control routes
+        # Enhanced device control routes
         self.app.route('/api/control/blower', methods=['POST'])(self.control_blower)
         self.app.route('/api/control/actuator', methods=['POST'])(self.control_actuator_motor)
+        self.app.route('/api/control/relay', methods=['POST'])(self.control_relay)
+        self.app.route('/api/control/command', methods=['POST'])(self.send_custom_command)
+        
+        # New enhanced sensor monitoring routes
+        self.app.route('/api/sensors/summary')(self.get_sensors_summary)
+        self.app.route('/api/sensors/solar')(self.get_solar_data)
+        self.app.route('/api/sensors/battery')(self.get_battery_data)
+        self.app.route('/api/sensors/load')(self.get_load_data)
+        self.app.route('/api/sensors/environmental')(self.get_environmental_data)
+        self.app.route('/api/sensors/power')(self.get_power_data)
 
     def parse_json_file(self, file_path: str) -> Dict[str, Any]:
         """
@@ -199,9 +214,9 @@ class APIService:
                 }), 500
 
         def health_check(self):
-            """Health check endpoint that returns API status and uptime"""
+            """Enhanced health check endpoint that includes Arduino status"""
             try:
-                # Try to read the sensors file as a basic health check
+                # Basic API health check
                 with open(self.sensors_file, 'r') as f:
                     json5.loads(f.read())  # Use json5 instead of json for JSONC support
                     
@@ -209,11 +224,23 @@ class APIService:
                 hours, remainder = divmod(uptime_seconds, 3600)
                 minutes, seconds = divmod(remainder, 60)
                 
+                # Include Arduino health status
+                arduino_healthy = False
+                arduino_status = {}
+                if self.serial_service:
+                    arduino_healthy = self.serial_service.is_arduino_healthy()
+                    arduino_status = self.serial_service.get_arduino_status()
+                
                 return jsonify({
                     'status': 'healthy',
                     'uptime': f'{hours}h {minutes}m {seconds}s',
                     'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-                    'version': '1.0.0'
+                    'version': '2.0.0',
+                    'arduino': {
+                        'healthy': arduino_healthy,
+                        'connected': arduino_status.get('connected', False),
+                        'system_ready': arduino_status.get('system_ready', False)
+                    }
                 })
                 
             except Exception as e:
@@ -222,6 +249,57 @@ class APIService:
                     'error': str(e),
                     'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
                 }), 503
+
+        def get_arduino_status(self):
+            """Get detailed Arduino system status"""
+            try:
+                if not self.serial_service:
+                    return jsonify({
+                        'error': 'Serial service not available'
+                    }), 503
+                
+                status = self.serial_service.get_arduino_status()
+                return jsonify({
+                    'status': 'success',
+                    'arduino_status': status,
+                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+                })
+                
+            except Exception as e:
+                return jsonify({
+                    'status': 'error',
+                    'message': f'Error getting Arduino status: {str(e)}'
+                }), 500
+
+        def check_arduino_health(self):
+            """Check Arduino health status"""
+            try:
+                if not self.serial_service:
+                    return jsonify({
+                        'healthy': False,
+                        'reason': 'Serial service not available'
+                    })
+                
+                healthy = self.serial_service.is_arduino_healthy()
+                status = self.serial_service.get_arduino_status()
+                
+                return jsonify({
+                    'healthy': healthy,
+                    'connected': status.get('connected', False),
+                    'system_ready': status.get('system_ready', False),
+                    'last_heartbeat': status.get('last_heartbeat').isoformat() if status.get('last_heartbeat') else None,
+                    'uptime': status.get('uptime', 0),
+                    'free_memory': status.get('free_memory', 0),
+                    'error_count': status.get('error_count', 0),
+                    'sensor_errors': status.get('sensor_errors', {}),
+                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+                })
+                
+            except Exception as e:
+                return jsonify({
+                    'healthy': False,
+                    'error': str(e)
+                }), 500
 
         def get_sensor_data(self, sensor_name):
             """Get data for a specific sensor by name"""
@@ -249,7 +327,7 @@ class APIService:
                 }), 500
 
         def get_all_sensors(self):
-            """Get list of all available sensors"""
+            """Get list of all available sensors with enhanced information"""
             try:
                 # Use sensor data service instead of reading file directly
                 all_data = self.sensor_data_service.get_sensor_data()
@@ -259,14 +337,17 @@ class APIService:
                     return jsonify({
                         'error': f'Error retrieving sensors list: {all_data["error"]}'
                     }), 500
-                    
-                # Return just the sensor names and descriptions
-                sensors = {
-                    name: {'description': info.get('description', 'No description available')}
-                    for name, info in all_data.get('sensors', {}).items()
-                }
                 
-                return jsonify(sensors)
+                # Include Arduino status in response
+                arduino_status = {}
+                if self.serial_service:
+                    arduino_status = self.serial_service.get_arduino_status()
+                
+                return jsonify({
+                    'sensors': all_data.get('sensors', {}),
+                    'arduino_status': arduino_status,
+                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+                })
                 
             except Exception as e:
                 return jsonify({
@@ -274,7 +355,7 @@ class APIService:
                 }), 500
 
         def control_blower(self):
-            """Control blower device via API"""
+            """Enhanced blower control with command acknowledgment"""
             try:
                 if not request.is_json:
                     return jsonify({
@@ -293,42 +374,51 @@ class APIService:
                     }), 400
 
                 # Validate actions
-                valid_actions = ['start', 'stop', 'speed', 'direction_reverse', 'direction_normal']
+                valid_actions = ['start', 'stop', 'speed', 'direction']
                 if action not in valid_actions:
                     return jsonify({
                         'status': 'error',
                         'message': f'Invalid action {action}. Valid actions are: {", ".join(valid_actions)}'
                     }), 400
 
-                # For speed action, validate value
+                # Build command string
                 if action == 'speed':
-                    if value is None:
+                    if value is None or not isinstance(value, int) or value < 0 or value > 255:
                         return jsonify({
                             'status': 'error',
-                            'message': 'Value is required for speed action'
+                            'message': 'Speed value must be an integer between 0 and 255'
                         }), 400
-                    if not isinstance(value, int) or value < 0:
+                    command = f"speed:{value}"
+                elif action == 'direction':
+                    direction = data.get('direction', 'normal')
+                    if direction not in ['normal', 'reverse']:
                         return jsonify({
                             'status': 'error',
-                            'message': 'Speed value must be a positive integer'
+                            'message': 'Direction must be "normal" or "reverse"'
                         }), 400
+                    command = f"direction:{direction}"
+                else:
+                    command = action
 
-                # Send command via control service
-                success = self.control_service.control_blower(action, value)
-
-                if success:
-                    message = f"Blower {action} command sent successfully"
-                    if action == 'speed':
-                        message = f"Blower speed set to {value}"
-                    return jsonify({
-                        'status': 'success',
-                        'message': message
-                    })
+                # Send command via serial service
+                if self.serial_service:
+                    success = self.serial_service.send_command('blower', command)
+                    if success:
+                        return jsonify({
+                            'status': 'success',
+                            'message': f'Blower {action} command sent successfully',
+                            'command': command
+                        })
+                    else:
+                        return jsonify({
+                            'status': 'error',
+                            'message': 'Failed to send command to Arduino'
+                        }), 500
                 else:
                     return jsonify({
                         'status': 'error',
-                        'message': 'Failed to send command to device'
-                    }), 500
+                        'message': 'Serial service not available'
+                    }), 503
 
             except Exception as e:
                 return jsonify({
@@ -337,7 +427,7 @@ class APIService:
                 }), 500
 
         def control_actuator_motor(self):
-            """Control actuator motor device via API"""
+            """Enhanced actuator motor control"""
             try:
                 if not request.is_json:
                     return jsonify({
@@ -362,24 +452,126 @@ class APIService:
                         'message': f'Invalid action. Valid actions are: {", ".join(valid_actions)}'
                     }), 400
 
-                # Send command via control service
-                success = self.control_service.control_actuator_motor(action)
-
-                if success:
-                    return jsonify({
-                        'status': 'success',
-                        'message': f"Actuator motor {action} command sent successfully"
-                    })
+                # Send command via serial service
+                if self.serial_service:
+                    success = self.serial_service.send_command('actuatormotor', action)
+                    if success:
+                        return jsonify({
+                            'status': 'success',
+                            'message': f'Actuator motor {action} command sent successfully'
+                        })
+                    else:
+                        return jsonify({
+                            'status': 'error',
+                            'message': 'Failed to send command to Arduino'
+                        }), 500
                 else:
                     return jsonify({
                         'status': 'error',
-                        'message': 'Failed to send command to device'
-                    }), 500
+                        'message': 'Serial service not available'
+                    }), 503
 
             except Exception as e:
                 return jsonify({
                     'status': 'error',
                     'message': f'Error controlling actuator motor: {str(e)}'
+                }), 500
+
+        def control_relay(self):
+            """Control relay devices"""
+            try:
+                if not request.is_json:
+                    return jsonify({
+                        'status': 'error',
+                        'message': 'Request must be JSON'
+                    }), 400
+
+                data = request.get_json()
+                relay_id = data.get('relay_id')
+                action = data.get('action')
+
+                if not relay_id or not action:
+                    return jsonify({
+                        'status': 'error',
+                        'message': 'Both relay_id and action are required'
+                    }), 400
+
+                # Validate actions
+                valid_actions = ['on', 'off', 'toggle']
+                if action not in valid_actions:
+                    return jsonify({
+                        'status': 'error',
+                        'message': f'Invalid action. Valid actions are: {", ".join(valid_actions)}'
+                    }), 400
+
+                # Send command via serial service
+                if self.serial_service:
+                    command = f"{relay_id}:{action}"
+                    success = self.serial_service.send_command('relay', command)
+                    if success:
+                        return jsonify({
+                            'status': 'success',
+                            'message': f'Relay {relay_id} {action} command sent successfully'
+                        })
+                    else:
+                        return jsonify({
+                            'status': 'error',
+                            'message': 'Failed to send command to Arduino'
+                        }), 500
+                else:
+                    return jsonify({
+                        'status': 'error',
+                        'message': 'Serial service not available'
+                    }), 503
+
+            except Exception as e:
+                return jsonify({
+                    'status': 'error',
+                    'message': f'Error controlling relay: {str(e)}'
+                }), 500
+
+        def send_custom_command(self):
+            """Send custom command to Arduino"""
+            try:
+                if not request.is_json:
+                    return jsonify({
+                        'status': 'error',
+                        'message': 'Request must be JSON'
+                    }), 400
+
+                data = request.get_json()
+                device = data.get('device')
+                action = data.get('action')
+
+                if not device or not action:
+                    return jsonify({
+                        'status': 'error',
+                        'message': 'Both device and action are required'
+                    }), 400
+
+                # Send command via serial service
+                if self.serial_service:
+                    success = self.serial_service.send_command(device, action)
+                    if success:
+                        return jsonify({
+                            'status': 'success',
+                            'message': f'Custom command sent: {device}:{action}'
+                        })
+                    else:
+                        return jsonify({
+                            'status': 'error',
+                            'message': 'Failed to send command to Arduino'
+                        }), 500
+                else:
+                    return jsonify({
+                        'status': 'error',
+                        'message': 'Serial service not available'
+                    }), 503
+
+            except Exception as e:
+                return jsonify({
+                    'status': 'error',
+                    'message': f'Error sending custom command: {str(e)}'
                 }), 500
 
         def sync_sensors_to_firebase(self):
@@ -395,6 +587,11 @@ class APIService:
                         'message': f'Failed to read sensor data: {sensor_data["error"]}'
                     }), 500
                 
+                # Include Arduino status in sync
+                if self.serial_service:
+                    arduino_status = self.serial_service.get_arduino_status()
+                    sensor_data['arduino_status'] = arduino_status
+                
                 # Sync to Firebase
                 success = self.firebase_service.sync_sensor_data(sensor_data)
                 
@@ -403,7 +600,8 @@ class APIService:
                         'status': 'success',
                         'message': 'Sensor data synced to Firebase successfully',
                         'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-                        'synced_sensors': list(sensor_data.get('sensors', {}).keys())
+                        'synced_sensors': list(sensor_data.get('sensors', {}).keys()),
+                        'arduino_status_included': bool(self.serial_service)
                     })
                 else:
                     return jsonify({
@@ -417,9 +615,247 @@ class APIService:
                     'message': f'Error syncing sensor data: {str(e)}'
                 }), 500
 
+        def get_sensors_summary(self):
+            """Get summary of all sensor data with categorization"""
+            try:
+                all_data = self.sensor_data_service.get_sensor_data()
+                
+                if 'error' in all_data:
+                    return jsonify({
+                        'error': f'Error retrieving sensor data: {all_data["error"]}'
+                    }), 500
+                
+                sensors = all_data.get('sensors', {})
+                
+                # Categorize sensors
+                environmental = {}
+                power_system = {}
+                actuators = {}
+                
+                for sensor_name, sensor_data in sensors.items():
+                    if any(keyword in sensor_name.lower() for keyword in ['dht', 'soil', 'water_temp', 'weight']):
+                        environmental[sensor_name] = sensor_data
+                    elif any(keyword in sensor_name.lower() for keyword in ['solar', 'battery', 'load', 'voltage', 'current']):
+                        power_system[sensor_name] = sensor_data
+                    elif any(keyword in sensor_name.lower() for keyword in ['actuator', 'blower', 'relay']):
+                        actuators[sensor_name] = sensor_data
+                
+                # Include Arduino status
+                arduino_status = {}
+                if self.serial_service:
+                    arduino_status = self.serial_service.get_arduino_status()
+                
+                return jsonify({
+                    'summary': {
+                        'environmental': environmental,
+                        'power_system': power_system,
+                        'actuators': actuators
+                    },
+                    'arduino_status': arduino_status,
+                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+                    'total_sensors': len(sensors)
+                })
+                
+            except Exception as e:
+                return jsonify({
+                    'error': f'Error getting sensors summary: {str(e)}'
+                }), 500
+
+        def get_solar_data(self):
+            """Get solar panel monitoring data"""
+            try:
+                all_data = self.sensor_data_service.get_sensor_data()
+                sensors = all_data.get('sensors', {})
+                
+                solar_data = sensors.get('SOLAR_MONITOR', {})
+                if not solar_data:
+                    return jsonify({
+                        'error': 'Solar monitor data not available'
+                    }), 404
+                
+                return jsonify({
+                    'solar_data': solar_data,
+                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+                })
+                
+            except Exception as e:
+                return jsonify({
+                    'error': f'Error getting solar data: {str(e)}'
+                }), 500
+
+        def get_battery_data(self):
+            """Get battery monitoring data"""
+            try:
+                all_data = self.sensor_data_service.get_sensor_data()
+                sensors = all_data.get('sensors', {})
+                
+                battery_data = sensors.get('BATTERY_MONITOR', {})
+                if not battery_data:
+                    return jsonify({
+                        'error': 'Battery monitor data not available'
+                    }), 404
+                
+                return jsonify({
+                    'battery_data': battery_data,
+                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+                })
+                
+            except Exception as e:
+                return jsonify({
+                    'error': f'Error getting battery data: {str(e)}'
+                }), 500
+
+        def get_load_data(self):
+            """Get load monitoring data"""
+            try:
+                all_data = self.sensor_data_service.get_sensor_data()
+                sensors = all_data.get('sensors', {})
+                
+                load_data = sensors.get('LOAD_MONITOR', {})
+                if not load_data:
+                    return jsonify({
+                        'error': 'Load monitor data not available'
+                    }), 404
+                
+                return jsonify({
+                    'load_data': load_data,
+                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+                })
+                
+            except Exception as e:
+                return jsonify({
+                    'error': f'Error getting load data: {str(e)}'
+                }), 500
+
+        def get_environmental_data(self):
+            """Get environmental sensor data (DHT, soil, water temp, weight)"""
+            try:
+                all_data = self.sensor_data_service.get_sensor_data()
+                sensors = all_data.get('sensors', {})
+                
+                environmental_sensors = [
+                    'DHT22_SYSTEM', 'DHT22_FEEDER', 
+                    'SOIL_SENSOR', 'WATER_TEMP_SENSOR', 'WEIGHT_SENSOR'
+                ]
+                
+                environmental_data = {}
+                for sensor_name in environmental_sensors:
+                    if sensor_name in sensors:
+                        environmental_data[sensor_name] = sensors[sensor_name]
+                
+                return jsonify({
+                    'environmental_data': environmental_data,
+                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+                    'sensor_count': len(environmental_data)
+                })
+                
+            except Exception as e:
+                return jsonify({
+                    'error': f'Error getting environmental data: {str(e)}'
+                }), 500
+
+        def get_power_data(self):
+            """Get complete power system data (solar, battery, load, voltage, current)"""
+            try:
+                all_data = self.sensor_data_service.get_sensor_data()
+                sensors = all_data.get('sensors', {})
+                
+                power_sensors = [
+                    'SOLAR_MONITOR', 'BATTERY_MONITOR', 'LOAD_MONITOR',
+                    'VOLTAGE_SENSOR', 'CURRENT_SENSOR'
+                ]
+                
+                power_data = {}
+                for sensor_name in power_sensors:
+                    if sensor_name in sensors:
+                        power_data[sensor_name] = sensors[sensor_name]
+                
+                # Calculate total power consumption and generation
+                summary = {
+                    'solar_power': 0,
+                    'load_power': 0,
+                    'battery_voltage': 0,
+                    'battery_percentage': 0,
+                    'system_status': 'unknown'
+                }
+                
+                # Extract power values if available
+                if 'SOLAR_MONITOR' in power_data:
+                    for value in power_data['SOLAR_MONITOR'].get('value', []):
+                        if value.get('type') == 'power':
+                            summary['solar_power'] = value.get('value', 0)
+                
+                if 'LOAD_MONITOR' in power_data:
+                    for value in power_data['LOAD_MONITOR'].get('value', []):
+                        if value.get('type') == 'power':
+                            summary['load_power'] = value.get('value', 0)
+                
+                if 'BATTERY_MONITOR' in power_data:
+                    for value in power_data['BATTERY_MONITOR'].get('value', []):
+                        if value.get('type') == 'voltage':
+                            summary['battery_voltage'] = value.get('value', 0)
+                        elif value.get('type') == 'percentage':
+                            summary['battery_percentage'] = value.get('value', 0)
+                        elif value.get('type') == 'status':
+                            summary['system_status'] = value.get('value', 'unknown')
+                
+                return jsonify({
+                    'power_data': power_data,
+                    'summary': summary,
+                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+                    'sensor_count': len(power_data)
+                })
+                
+            except Exception as e:
+                return jsonify({
+                    'error': f'Error getting power data: {str(e)}'
+                }), 500
+
         def start(self):
             """Start the Flask server"""
             try:
+                print("🌐 Enhanced API Service starting...")
+                print(f"📡 Serial service: {'Connected' if self.serial_service and self.serial_service.is_running else 'Not available'}")
+                print("📋 Available endpoints:")
+                print("  🏥 Health & Status:")
+                print("    - GET  /health                    - Health check with Arduino status")
+                print("    - GET  /api/arduino/status        - Detailed Arduino status")
+                print("    - GET  /api/arduino/health        - Arduino health check")
+                print("\n  📊 Sensor Data:")
+                print("    - GET  /api/sensors               - Get all sensors with Arduino status")
+                print("    - GET  /api/sensors/<name>        - Get specific sensor")
+                print("    - GET  /api/sensors/summary       - Get categorized sensor summary")
+                print("    - GET  /api/sensors/solar         - Get solar panel data")
+                print("    - GET  /api/sensors/battery       - Get battery data")
+                print("    - GET  /api/sensors/load          - Get load monitoring data")
+                print("    - GET  /api/sensors/environmental - Get environmental sensors")
+                print("    - GET  /api/sensors/power         - Get complete power system data")
+                print("    - POST /api/sensors/sync          - Sync to Firebase")
+                print("\n  🎮 Device Control:")
+                print("    - POST /api/control/blower        - Control blower motor")
+                print("    - POST /api/control/actuator      - Control actuator motor")
+                print("    - POST /api/control/relay         - Control relay devices")
+                print("    - POST /api/control/command       - Send custom commands")
+                print("\n  📹 Camera & Media:")
+                print("    - GET  /api/camera/video_feed     - Live video stream")
+                print("    - POST /api/camera/photo          - Take photo")
+                print("    - POST /api/camera/record/start   - Start video recording")
+                print("    - POST /api/camera/record/stop    - Stop video recording")
+                
+                print("\n🔥 Firebase sync: POST /api/sensors/sync")
+                print("💡 Test commands:")
+                print("   curl -X GET http://localhost:5000/api/sensors/summary")
+                print("   curl -X GET http://localhost:5000/api/sensors/power")
+                print("   curl -X POST http://localhost:5000/api/sensors/sync")
+                print("   curl -X POST -H 'Content-Type: application/json' \\")
+                print("        -d '{\"action\":\"start\"}' http://localhost:5000/api/control/blower")
+                print("   curl -X POST -H 'Content-Type: application/json' \\")
+                print("        -d '{\"action\":\"up\"}' http://localhost:5000/api/control/actuator")
+                print("   curl -X POST -H 'Content-Type: application/json' \\")
+                print("        -d '{\"relay_id\":\"1\",\"action\":\"on\"}' http://localhost:5000/api/control/relay")
+                
+                print("\n" + "="*60)
+                
                 # Start Flask server
                 self.app.run(host=self.host, port=self.port)
             finally:

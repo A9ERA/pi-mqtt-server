@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Serial Configuration
-BAUD_RATE = int(os.getenv('BAUD_RATE', '9600'))
+BAUD_RATE = int(os.getenv('BAUD_RATE', '115200'))
 
 # Application Configuration
 APP_NAME = "FISH FEEDER - Pi Serial Server"
