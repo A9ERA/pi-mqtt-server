@@ -193,6 +193,11 @@ class ChartDataService:
                     'column': 'temperature_C',
                     'label': 'Feeder Temp',
                 },
+                'feederHumi': {
+                    'sensor_dir': 'dht22-feeder',
+                    'column': 'humidity_%',
+                    'label': 'Feeder Humidity',
+                },
                 'systemTemp': {
                     'sensor_dir': 'dht22-system',
                     'column': 'temperature_C',
