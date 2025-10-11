@@ -3,7 +3,7 @@ flask==3.0.2
 flask-cors==4.0.0
 json5==0.9.14
 numpy==1.26.4
-pandas==2.2.1
+pandas==2.3.3
 opencv-python==4.8.1.78
 pyserial==3.5
 python-dotenv>=0.19.0
