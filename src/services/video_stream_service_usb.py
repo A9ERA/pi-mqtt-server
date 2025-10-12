@@ -325,13 +325,18 @@ class VideoStreamService:
         if not fps or fps <= 1:
             fps = int(self.target_fps)
 
+        # Try multiple encoder configurations (hardware first, then software)
         encoders = [
-            ['-c:v', 'h264_v4l2m2m'],
-            ['-c:v', 'libx264', '-preset', 'veryfast']
+            # Hardware encoder with lower bitrate for Pi
+            ['-c:v', 'h264_v4l2m2m', '-b:v', '500k'],
+            # Software encoder with fast preset
+            ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28'],
+            # Software encoder with very fast preset
+            ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28']
         ]
 
         common = [
-            ffmpeg_bin, '-hide_banner', '-loglevel', 'warning',
+            ffmpeg_bin, '-hide_banner', '-loglevel', 'error',
             '-f', 'v4l2', '-input_format', 'mjpeg',
             '-framerate', str(fps), '-video_size', f'{width}x{height}',
             '-i', str(self.device_path),
@@ -481,15 +486,33 @@ class VideoStreamService:
         if self.ffmpeg_feeder_proc is not None:
             self.current_feeder_recording = str(output_file)
             print(f"🎬 Feeder recording started via ffmpeg: {output_file}")
-            # Wait for ffmpeg to create the file (up to 3 seconds)
-            for i in range(30):
+            # Wait for ffmpeg to create the file (up to 5 seconds)
+            ffmpeg_ok = False
+            for i in range(50):
+                # Check if ffmpeg is still running
+                if self.ffmpeg_feeder_proc.poll() is not None:
+                    stderr_output = self.ffmpeg_feeder_proc.stderr.read().decode('utf-8', errors='ignore') if self.ffmpeg_feeder_proc.stderr else ""
+                    print(f"❌ ffmpeg process died: {stderr_output[:300]}")
+                    self.ffmpeg_feeder_proc = None
+                    break
                 if output_file.exists() and output_file.stat().st_size > 0:
-                    print(f"✅ ffmpeg file created: {output_file}")
+                    print(f"✅ ffmpeg file created: {output_file} ({output_file.stat().st_size} bytes)")
+                    ffmpeg_ok = True
                     break
                 time.sleep(0.1)
+            
+            if not ffmpeg_ok:
+                print(f"⚠️  ffmpeg failed to create file, falling back to OpenCV writer")
+                # Clean up failed ffmpeg
+                if self.ffmpeg_feeder_proc is not None:
+                    try:
+                        self.ffmpeg_feeder_proc.terminate()
+                    except Exception:
+                        pass
+                    self.ffmpeg_feeder_proc = None
+                # Fall through to OpenCV writer
             else:
-                print(f"⚠️  ffmpeg file not yet created after 3s, continuing anyway...")
-            return self.current_feeder_recording
+                return self.current_feeder_recording
 
         writer, actual_path = self._create_video_writer(output_file)
         if writer is None or not writer.isOpened():
@@ -507,16 +530,20 @@ class VideoStreamService:
         if self.ffmpeg_feeder_proc is not None:
             recording_file = getattr(self, 'current_feeder_recording', None)
             try:
-                if self.ffmpeg_feeder_proc.stdin:
-                    try:
-                        self.ffmpeg_feeder_proc.stdin.write(b'q')
-                        self.ffmpeg_feeder_proc.stdin.flush()
-                        self.ffmpeg_feeder_proc.stdin.close()
-                    except Exception:
-                        pass
-                # Wait for ffmpeg to finish writing (important for moov atom)
-                self.ffmpeg_feeder_proc.wait(timeout=10)
-                print("🛑 Feeder recording stopped (ffmpeg)")
+                # Check if process is still running before sending 'q'
+                if self.ffmpeg_feeder_proc.poll() is None:
+                    if self.ffmpeg_feeder_proc.stdin:
+                        try:
+                            self.ffmpeg_feeder_proc.stdin.write(b'q')
+                            self.ffmpeg_feeder_proc.stdin.flush()
+                            self.ffmpeg_feeder_proc.stdin.close()
+                        except (BrokenPipeError, OSError) as e:
+                            print(f"⚠️  ffmpeg stdin error (process may have died): {e}")
+                    # Wait for ffmpeg to finish writing (important for moov atom)
+                    self.ffmpeg_feeder_proc.wait(timeout=10)
+                    print("🛑 Feeder recording stopped (ffmpeg)")
+                else:
+                    print(f"⚠️  ffmpeg process already terminated with code: {self.ffmpeg_feeder_proc.returncode}")
                 # Give filesystem a moment to sync
                 time.sleep(0.5)
             except Exception as e:
