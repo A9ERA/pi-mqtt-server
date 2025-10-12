@@ -162,18 +162,22 @@ class FeederService:
             time.sleep(estimated_duration)
 
             # Stop video recording
+            final_video_file = None
             try:
                 if video_file:
                     final_video_file = self.video_service.stop_feeder_recording()
-                    print(f"[Feeder Service] Video recording stopped: {final_video_file}")
+                    if final_video_file:
+                        print(f"[Feeder Service] Video recording stopped: {final_video_file}")
+                    else:
+                        print(f"[Feeder Service] Warning: Video file was not created or is empty")
             except Exception as video_error:
                 print(f"[Feeder Service] Warning: Failed to stop video recording: {video_error}")
 
             print(f"[Feeder Service] Feeding process completed successfully!")
             
             # Log successful feed operation
-            # Extract only filename from full path for CSV storage
-            video_filename = Path(video_file).name if video_file else ""
+            # Extract only filename from full path for CSV storage (only if file exists)
+            video_filename = Path(final_video_file).name if final_video_file else ""
             snapshot = self._snapshot_sensor_values()
             self.history_service.log_feed_operation(
                 feed_size=feed_size,
@@ -193,7 +197,7 @@ class FeederService:
                 'status': 'success',
                 'message': 'Feeding process completed successfully (Arduino controlled)',
                 'feed_size': feed_size,
-                'video_file': video_file,
+                'video_file': final_video_file,
                 'total_duration': estimated_duration,
                 'steps_completed': [
                     f"Arduino controlled sequence:",

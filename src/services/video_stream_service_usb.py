@@ -344,12 +344,17 @@ class VideoStreamService:
             insert_idx = cmd.index('-pix_fmt') if '-pix_fmt' in cmd else len(cmd)
             cmd = cmd[:insert_idx] + enc + cmd[insert_idx:]
             try:
+                print(f"🎬 Trying ffmpeg command: {' '.join(cmd)}")
                 proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                time.sleep(0.3)
+                time.sleep(0.5)
                 if proc.poll() is None:
+                    print(f"✅ ffmpeg started successfully with encoder: {enc}")
                     return proc
-            except Exception:
-                pass
+                else:
+                    stderr_output = proc.stderr.read().decode('utf-8', errors='ignore') if proc.stderr else ""
+                    print(f"⚠️  ffmpeg failed with encoder {enc}: {stderr_output[:200]}")
+            except Exception as e:
+                print(f"⚠️  ffmpeg exception with encoder {enc}: {e}")
         return None
 
     def _ffmpeg_faststart_copy(self, input_path: Path) -> Path | None:
@@ -476,6 +481,14 @@ class VideoStreamService:
         if self.ffmpeg_feeder_proc is not None:
             self.current_feeder_recording = str(output_file)
             print(f"🎬 Feeder recording started via ffmpeg: {output_file}")
+            # Wait for ffmpeg to create the file (up to 3 seconds)
+            for i in range(30):
+                if output_file.exists() and output_file.stat().st_size > 0:
+                    print(f"✅ ffmpeg file created: {output_file}")
+                    break
+                time.sleep(0.1)
+            else:
+                print(f"⚠️  ffmpeg file not yet created after 3s, continuing anyway...")
             return self.current_feeder_recording
 
         writer, actual_path = self._create_video_writer(output_file)
@@ -487,31 +500,50 @@ class VideoStreamService:
         return self.current_feeder_recording
 
     def stop_feeder_recording(self):
-        """Stop feeder video recording and return file path"""
+        """Stop feeder video recording and return file path (or None if file doesn't exist)"""
         if self.mock_mode:
             print("🛑 Mock feeder recording stopped")
             return getattr(self, 'current_feeder_recording', None)
         if self.ffmpeg_feeder_proc is not None:
+            recording_file = getattr(self, 'current_feeder_recording', None)
             try:
                 if self.ffmpeg_feeder_proc.stdin:
                     try:
                         self.ffmpeg_feeder_proc.stdin.write(b'q')
                         self.ffmpeg_feeder_proc.stdin.flush()
+                        self.ffmpeg_feeder_proc.stdin.close()
                     except Exception:
                         pass
-                self.ffmpeg_feeder_proc.wait(timeout=5)
-            except Exception:
+                # Wait for ffmpeg to finish writing (important for moov atom)
+                self.ffmpeg_feeder_proc.wait(timeout=10)
+                print("🛑 Feeder recording stopped (ffmpeg)")
+                # Give filesystem a moment to sync
+                time.sleep(0.5)
+            except Exception as e:
+                print(f"⚠️  ffmpeg wait timeout or error: {e}")
                 try:
                     self.ffmpeg_feeder_proc.terminate()
+                    self.ffmpeg_feeder_proc.wait(timeout=2)
                 except Exception:
-                    pass
+                    try:
+                        self.ffmpeg_feeder_proc.kill()
+                    except Exception:
+                        pass
             finally:
                 self.ffmpeg_feeder_proc = None
-            print("🛑 Feeder recording stopped (ffmpeg)")
-            recording_file = getattr(self, 'current_feeder_recording', None)
+            
             if hasattr(self, 'current_feeder_recording'):
                 delattr(self, 'current_feeder_recording')
-            return recording_file
+            # Verify file exists and has content
+            if recording_file:
+                recording_path = Path(recording_file)
+                if recording_path.exists() and recording_path.stat().st_size > 0:
+                    print(f"✅ Video file verified: {recording_file} ({recording_path.stat().st_size} bytes)")
+                    return recording_file
+                else:
+                    print(f"⚠️  Video file not found or empty: {recording_file}")
+                    return None
+            return None
         if self.feeder_writer is not None:
             try:
                 self.feeder_writer.release()
@@ -530,7 +562,16 @@ class VideoStreamService:
         recording_file = getattr(self, 'current_feeder_recording', None)
         if hasattr(self, 'current_feeder_recording'):
             delattr(self, 'current_feeder_recording')
-        return recording_file
+        # Verify file exists and has content
+        if recording_file:
+            recording_path = Path(recording_file)
+            if recording_path.exists() and recording_path.stat().st_size > 0:
+                print(f"✅ Video file verified: {recording_file} ({recording_path.stat().st_size} bytes)")
+                return recording_file
+            else:
+                print(f"⚠️  Video file not found or empty: {recording_file}")
+                return None
+        return None
 
     def release(self):
         """Release camera resources"""
